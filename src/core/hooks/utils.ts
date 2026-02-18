@@ -7,7 +7,7 @@
 import crypto from "crypto"
 import fs from "fs/promises"
 import path from "path"
-import { minimatch } from "minimatch"
+import minimatch from "minimatch"
 
 /**
  * Compute SHA-256 hash of content for spatial independence

@@ -36,9 +36,10 @@ export class SelectActiveIntentTool extends BaseTool<"select_active_intent"> {
 			// Check if orchestration is enabled
 			const enabled = await hookEngine.isEnabled()
 			if (!enabled) {
-				await task.say("text", {
-					text: `⚠️ Orchestration system is not enabled. Create .orchestration/ directory to enable intent tracking.`,
-				})
+				await task.say(
+					"text",
+					`⚠️ Orchestration system is not enabled. Create .orchestration/ directory to enable intent tracking.`,
+				)
 				pushToolResult(formatResponse.toolResult(`Orchestration not enabled. Intent selection skipped.`, []))
 				return
 			}
@@ -50,9 +51,7 @@ export class SelectActiveIntentTool extends BaseTool<"select_active_intent"> {
 			if (!intent) {
 				task.consecutiveMistakeCount++
 				task.recordToolError("select_active_intent")
-				await task.say("text", {
-					text: `❌ Intent ${intent_id} not found in active_intents.yaml`,
-				})
+				await task.say("text", `❌ Intent ${intent_id} not found in active_intents.yaml`)
 				pushToolResult(
 					formatResponse.toolError(
 						`Intent ${intent_id} not found. Available intents can be found in .orchestration/active_intents.yaml`,
@@ -77,16 +76,16 @@ export class SelectActiveIntentTool extends BaseTool<"select_active_intent"> {
 			task.consecutiveMistakeCount = 0
 			task.recordToolUsage("select_active_intent")
 
-			await task.say("text", {
-				text:
-					`✅ Selected Intent: ${intent.name} (${intent_id})\n\n` +
+			await task.say(
+				"text",
+				`✅ Selected Intent: ${intent.name} (${intent_id})\n\n` +
 					`Status: ${intent.status}\n` +
 					`Scope: ${intent.owned_scope.join(", ")}\n` +
 					`Constraints: ${intent.constraints.length} active\n` +
 					`Related Files: ${intentContext.relatedFiles.length} tracked\n\n` +
 					(reasoning ? `Reasoning: ${reasoning}\n\n` : "") +
 					`You now have full context for this intent. All file modifications will be traced to ${intent_id}.`,
-			})
+			)
 
 			// Return context as tool result
 			pushToolResult(
@@ -98,9 +97,7 @@ export class SelectActiveIntentTool extends BaseTool<"select_active_intent"> {
 		} catch (error: any) {
 			task.consecutiveMistakeCount++
 			task.recordToolError("select_active_intent")
-			await task.say("text", {
-				text: `❌ Error selecting intent: ${error.message}`,
-			})
+			await task.say("text", `❌ Error selecting intent: ${error.message}`)
 			pushToolResult(formatResponse.toolError(`Failed to select intent: ${error.message}`))
 		}
 	}
