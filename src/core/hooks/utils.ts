@@ -7,7 +7,6 @@
 import crypto from "crypto"
 import fs from "fs/promises"
 import path from "path"
-import minimatch from "minimatch"
 
 /**
  * Compute SHA-256 hash of content for spatial independence
@@ -31,10 +30,81 @@ export async function computeFileHash(filePath: string): Promise<string> {
 }
 
 /**
+ * Convert glob pattern to regex
+ * Supports: *, **, ?, [abc], {a,b,c}
+ */
+function globToRegex(pattern: string): RegExp {
+	let regexStr = "^"
+	let i = 0
+
+	while (i < pattern.length) {
+		const char = pattern[i]
+
+		if (char === "*") {
+			// Check for **
+			if (pattern[i + 1] === "*") {
+				// ** matches any number of directories
+				regexStr += ".*"
+				i += 2
+				// Skip trailing /
+				if (pattern[i] === "/") {
+					i++
+				}
+			} else {
+				// * matches anything except /
+				regexStr += "[^/]*"
+				i++
+			}
+		} else if (char === "?") {
+			// ? matches any single character except /
+			regexStr += "[^/]"
+			i++
+		} else if (char === "[") {
+			// Character class [abc]
+			const closeIdx = pattern.indexOf("]", i)
+			if (closeIdx !== -1) {
+				regexStr += pattern.substring(i, closeIdx + 1)
+				i = closeIdx + 1
+			} else {
+				regexStr += "\\["
+				i++
+			}
+		} else if (char === "{") {
+			// Brace expansion {a,b,c}
+			const closeIdx = pattern.indexOf("}", i)
+			if (closeIdx !== -1) {
+				const options = pattern.substring(i + 1, closeIdx).split(",")
+				regexStr += "(" + options.map((opt) => opt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")"
+				i = closeIdx + 1
+			} else {
+				regexStr += "\\{"
+				i++
+			}
+		} else if (/[.*+?^${}()|[\]\\]/.test(char)) {
+			// Escape regex special characters
+			regexStr += "\\" + char
+			i++
+		} else {
+			regexStr += char
+			i++
+		}
+	}
+
+	regexStr += "$"
+	return new RegExp(regexStr)
+}
+
+/**
  * Check if a file path matches any of the glob patterns
  */
 export function matchesScope(filePath: string, patterns: string[]): boolean {
-	return patterns.some((pattern) => minimatch(filePath, pattern, { dot: true }))
+	// Normalize path to use forward slashes
+	const normalizedPath = normalizePath(filePath)
+
+	return patterns.some((pattern) => {
+		const regex = globToRegex(pattern)
+		return regex.test(normalizedPath)
+	})
 }
 
 /**
@@ -105,28 +175,17 @@ export function getRelativePath(cwd: string, absolutePath: string): string {
  * For production, use a proper YAML library like 'yaml'
  */
 export function parseYAML(content: string): any {
-	// This is a placeholder - in production, use the 'yaml' package
-	// For now, we'll use a simple implementation
-	try {
-		// Try to use yaml package if available
-		const yaml = require("yaml")
-		return yaml.parse(content)
-	} catch {
-		// Fallback to JSON if yaml not available
-		throw new Error("YAML parsing requires 'yaml' package")
-	}
+	// Use yaml package
+	const yaml = require("yaml")
+	return yaml.parse(content)
 }
 
 /**
  * Stringify to YAML
  */
 export function stringifyYAML(data: any): string {
-	try {
-		const yaml = require("yaml")
-		return yaml.stringify(data)
-	} catch {
-		throw new Error("YAML stringification requires 'yaml' package")
-	}
+	const yaml = require("yaml")
+	return yaml.stringify(data)
 }
 
 /**
