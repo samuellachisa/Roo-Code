@@ -23,6 +23,7 @@ AGENTS.local.md
 # Test environment
 .test_env
 .vscode-test/
+.kiro
 
 # Docs
 docs/_site/
