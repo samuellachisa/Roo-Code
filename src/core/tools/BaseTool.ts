@@ -2,6 +2,9 @@ import type { ToolName } from "@roo-code/types"
 
 import { Task } from "../task/Task"
 import type { ToolUse, HandleError, PushToolResult, AskApproval, NativeToolArgs } from "../../shared/tools"
+import { HookEngine } from "../hooks/HookEngine"
+import { extractFilePathFromParams } from "../hooks/utils"
+import { formatResponse } from "../prompts/responses"
 
 /**
  * Callbacks passed to tool execution
@@ -156,7 +159,69 @@ export abstract class BaseTool<TName extends ToolName> {
 			return
 		}
 
-		// Execute with typed parameters
-		await this.execute(params, task, callbacks)
+		// Hook integration: wrap execute() with PreToolUse/PostToolUse
+		let hookEngine: HookEngine | null = null
+		let hookEnabled = false
+
+		try {
+			hookEngine = HookEngine.getInstance(task.cwd, task.taskId)
+			hookEnabled = await hookEngine.isEnabled()
+		} catch (err) {
+			console.error("[HookSystem] Failed to initialize HookEngine, proceeding without hooks:", err)
+		}
+
+		if (hookEnabled && hookEngine) {
+			const filePath = extractFilePathFromParams(params as Record<string, unknown>)
+
+			let preResult
+			try {
+				preResult = await hookEngine.preToolUse({
+					toolName: this.name,
+					filePath,
+					intentId: hookEngine.getActiveIntent(),
+					params: params as Record<string, unknown>,
+					sessionId: task.taskId,
+				})
+			} catch (hookErr) {
+				// Fail-open: hook error should not block tool execution
+				console.error("[HookSystem] preToolUse failed, allowing execution:", hookErr)
+				preResult = { allowed: true }
+			}
+
+			if (!preResult.allowed) {
+				callbacks.pushToolResult(formatResponse.toolError(preResult.reason ?? "Hook rejected execution"))
+				return
+			}
+
+			// Execute the tool
+			let execSuccess = true
+			let execError: string | undefined
+			try {
+				await this.execute(params, task, callbacks)
+			} catch (execErr) {
+				execSuccess = false
+				execError = execErr instanceof Error ? execErr.message : String(execErr)
+				throw execErr
+			} finally {
+				// PostToolUse runs regardless of success/failure
+				try {
+					await hookEngine.postToolUse({
+						toolName: this.name,
+						filePath,
+						intentId: hookEngine.getActiveIntent() ?? "UNKNOWN",
+						params: params as Record<string, unknown>,
+						sessionId: task.taskId,
+						preHash: preResult.preHash ?? null,
+						success: execSuccess,
+						error: execError,
+					})
+				} catch (postErr) {
+					console.error("[HookSystem] postToolUse failed:", postErr)
+				}
+			}
+		} else {
+			// No hooks — execute directly (backward compatible)
+			await this.execute(params, task, callbacks)
+		}
 	}
 }

@@ -9,6 +9,7 @@ import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import { HookEngine } from "../hooks/HookEngine"
+import { IntentLifecycleManager } from "../hooks/IntentLifecycleManager"
 
 interface SelectActiveIntentParams {
 	intent_id: string
@@ -58,6 +59,16 @@ export class SelectActiveIntentTool extends BaseTool<"select_active_intent"> {
 					),
 				)
 				return
+			}
+
+			// Transition PENDING → IN_PROGRESS if needed
+			if (intent.status === "PENDING") {
+				try {
+					await IntentLifecycleManager.transitionIntent(intent_id, "IN_PROGRESS", task.cwd)
+					await contextLoader.reload()
+				} catch (transitionErr: any) {
+					console.warn(`[HookSystem] Failed to transition intent to IN_PROGRESS: ${transitionErr.message}`)
+				}
 			}
 
 			// Set active intent in hook engine
