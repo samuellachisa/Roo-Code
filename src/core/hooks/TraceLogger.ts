@@ -1,229 +1,136 @@
 /**
- * Trace Logger
+ * TraceLogger
  *
- * Logs agent actions to .orchestration/agent_trace.jsonl
- * Implements the Agent Trace specification for spatial independence
+ * Append-only writer to .orchestration/agent_trace.jsonl.
+ * Implements Constitution Principle 7: "Trust debt is repaid cryptographically."
+ *
+ * Write semantics: one JSON line per entry, atomic append, no rotation.
+ * Read semantics: best-effort, returns empty array if file is missing.
  */
 
-import path from "path"
-import type { AgentTraceEntry, AgentTraceFile, AgentTraceConversation, AgentTraceRange, MutationClass } from "./types"
-import {
-	generateUUID,
-	getCurrentTimestamp,
-	getGitRevision,
-	computeContentHash,
-	appendToJSONL,
-	getRelativePath,
-} from "./utils"
+import * as fs from "fs/promises"
+import * as path from "path"
+import { v4 as uuidv4 } from "uuid"
 
-export interface TraceLogEntry {
-	intentId: string
-	mutationClass: MutationClass
-	filePath: string
-	content: string
-	startLine: number
-	endLine: number
-	sessionId: string
-	modelIdentifier: string
-}
+import type { TraceEntry, MutationClass } from "./types"
+
+const TRACE_FILENAME = "agent_trace.jsonl"
+const RETRY_DELAY_MS = 100
 
 export class TraceLogger {
-	private cwd: string
-	private orchestrationDir: string
+	private workspacePath: string
 
-	constructor(cwd: string) {
-		this.cwd = cwd
-		this.orchestrationDir = path.join(cwd, ".orchestration")
+	constructor(workspacePath: string) {
+		this.workspacePath = workspacePath
+	}
+
+	private get traceFilePath(): string {
+		return path.join(this.workspacePath, ".orchestration", TRACE_FILENAME)
 	}
 
 	/**
-	 * Log a file modification to the trace
+	 * Create a new trace entry with auto-generated ID and timestamp.
 	 */
-	async logFileModification(entry: TraceLogEntry): Promise<AgentTraceEntry> {
-		const { intentId, mutationClass, filePath, content, startLine, endLine, sessionId, modelIdentifier } = entry
-
-		// Compute content hash for spatial independence
-		const contentHash = computeContentHash(content)
-
-		// Get Git revision
-		const gitRevision = await getGitRevision(this.cwd)
-
-		// Get relative path
-		const relativePath = getRelativePath(this.cwd, filePath)
-
-		// Build trace entry
-		const traceEntry: AgentTraceEntry = {
-			id: generateUUID(),
-			timestamp: getCurrentTimestamp(),
-			intent_id: intentId,
-			mutation_class: mutationClass,
-			vcs: {
-				revision_id: gitRevision,
-			},
-			files: [
-				{
-					relative_path: relativePath,
-					conversations: [
-						{
-							url: sessionId,
-							contributor: {
-								entity_type: "AI",
-								model_identifier: modelIdentifier,
-							},
-							ranges: [
-								{
-									start_line: startLine,
-									end_line: endLine,
-									content_hash: contentHash,
-								},
-							],
-							related: [
-								{
-									type: "specification",
-									value: intentId,
-								},
-							],
-						},
-					],
-				},
-			],
+	createEntry(params: {
+		intentId: string
+		sessionId: string
+		toolName: string
+		mutationClass: MutationClass
+		filePath: string | null
+		preHash: string | null
+		postHash: string | null
+		scopeValidation: "PASS" | "FAIL" | "EXEMPT"
+		success: boolean
+		error?: string
+	}): TraceEntry {
+		return {
+			id: uuidv4(),
+			timestamp: new Date().toISOString(),
+			intent_id: params.intentId,
+			session_id: params.sessionId,
+			tool_name: params.toolName,
+			mutation_class: params.mutationClass,
+			file: params.filePath
+				? {
+						relative_path: params.filePath,
+						pre_hash: params.preHash,
+						post_hash: params.postHash,
+					}
+				: null,
+			scope_validation: params.scopeValidation,
+			success: params.success,
+			error: params.error,
 		}
-
-		// Append to JSONL
-		const tracePath = path.join(this.orchestrationDir, "agent_trace.jsonl")
-		await appendToJSONL(tracePath, traceEntry)
-
-		return traceEntry
 	}
 
 	/**
-	 * Log multiple file modifications in a single trace entry
+	 * Append a trace entry to the JSONL ledger.
+	 * Retries once on write failure. Never throws — governance gaps
+	 * are preferable to blocked tool execution.
 	 */
-	async logMultiFileModification(
-		intentId: string,
-		mutationClass: MutationClass,
-		files: Array<{
-			filePath: string
-			content: string
-			startLine: number
-			endLine: number
-		}>,
-		sessionId: string,
-		modelIdentifier: string,
-	): Promise<AgentTraceEntry> {
-		const gitRevision = await getGitRevision(this.cwd)
+	async log(entry: TraceEntry): Promise<void> {
+		const line = JSON.stringify(entry) + "\n"
 
-		const traceFiles: AgentTraceFile[] = []
-
-		for (const file of files) {
-			const contentHash = computeContentHash(file.content)
-			const relativePath = getRelativePath(this.cwd, file.filePath)
-
-			traceFiles.push({
-				relative_path: relativePath,
-				conversations: [
-					{
-						url: sessionId,
-						contributor: {
-							entity_type: "AI",
-							model_identifier: modelIdentifier,
-						},
-						ranges: [
-							{
-								start_line: file.startLine,
-								end_line: file.endLine,
-								content_hash: contentHash,
-							},
-						],
-						related: [
-							{
-								type: "specification",
-								value: intentId,
-							},
-						],
-					},
-				],
-			})
-		}
-
-		const traceEntry: AgentTraceEntry = {
-			id: generateUUID(),
-			timestamp: getCurrentTimestamp(),
-			intent_id: intentId,
-			mutation_class: mutationClass,
-			vcs: {
-				revision_id: gitRevision,
-			},
-			files: traceFiles,
-		}
-
-		const tracePath = path.join(this.orchestrationDir, "agent_trace.jsonl")
-		await appendToJSONL(tracePath, traceEntry)
-
-		return traceEntry
-	}
-
-	/**
-	 * Query traces by intent ID
-	 */
-	async getTracesByIntent(intentId: string): Promise<AgentTraceEntry[]> {
-		const { readJSONL } = await import("./utils")
-		const tracePath = path.join(this.orchestrationDir, "agent_trace.jsonl")
-
-		const allTraces = await readJSONL(tracePath)
-		return allTraces.filter((trace: AgentTraceEntry) => trace.intent_id === intentId)
-	}
-
-	/**
-	 * Query traces by file path
-	 */
-	async getTracesByFile(filePath: string): Promise<AgentTraceEntry[]> {
-		const { readJSONL } = await import("./utils")
-		const tracePath = path.join(this.orchestrationDir, "agent_trace.jsonl")
-		const relativePath = getRelativePath(this.cwd, filePath)
-
-		const allTraces = await readJSONL(tracePath)
-		return allTraces.filter((trace: AgentTraceEntry) =>
-			trace.files.some((file) => file.relative_path === relativePath),
-		)
-	}
-
-	/**
-	 * Get trace statistics
-	 */
-	async getTraceStats(): Promise<{
-		totalTraces: number
-		byIntent: Record<string, number>
-		byMutationClass: Record<string, number>
-		filesModified: number
-	}> {
-		const { readJSONL } = await import("./utils")
-		const tracePath = path.join(this.orchestrationDir, "agent_trace.jsonl")
-
-		const allTraces = await readJSONL(tracePath)
-
-		const byIntent: Record<string, number> = {}
-		const byMutationClass: Record<string, number> = {}
-		const filesSet = new Set<string>()
-
-		for (const trace of allTraces) {
-			// Count by intent
-			byIntent[trace.intent_id] = (byIntent[trace.intent_id] || 0) + 1
-
-			// Count by mutation class
-			byMutationClass[trace.mutation_class] = (byMutationClass[trace.mutation_class] || 0) + 1
-
-			// Track unique files
-			for (const file of trace.files) {
-				filesSet.add(file.relative_path)
+		try {
+			await fs.appendFile(this.traceFilePath, line, "utf-8")
+		} catch (firstErr) {
+			// Retry once after a short delay (file lock, etc.)
+			try {
+				await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
+				await fs.appendFile(this.traceFilePath, line, "utf-8")
+			} catch (retryErr) {
+				console.error("[HookSystem] Failed to append trace entry after retry:", retryErr)
 			}
 		}
+	}
 
-		return {
-			totalTraces: allTraces.length,
-			byIntent,
-			byMutationClass,
-			filesModified: filesSet.size,
+	/**
+	 * Read the most recent trace entries for a given intent.
+	 * Returns empty array if the file doesn't exist or is unreadable.
+	 */
+	async getRecentEntries(intentId: string, limit: number = 20): Promise<TraceEntry[]> {
+		try {
+			const content = await fs.readFile(this.traceFilePath, "utf-8")
+			const lines = content.trim().split("\n").filter(Boolean)
+			const entries: TraceEntry[] = []
+
+			for (const line of lines) {
+				try {
+					const entry = JSON.parse(line) as TraceEntry
+					if (entry.intent_id === intentId) {
+						entries.push(entry)
+					}
+				} catch {
+					// Skip malformed lines
+				}
+			}
+
+			return entries.slice(-limit)
+		} catch {
+			return []
+		}
+	}
+
+	/**
+	 * Read all trace entries (for diagnostics/testing).
+	 */
+	async getAllEntries(): Promise<TraceEntry[]> {
+		try {
+			const content = await fs.readFile(this.traceFilePath, "utf-8")
+			const lines = content.trim().split("\n").filter(Boolean)
+			const entries: TraceEntry[] = []
+
+			for (const line of lines) {
+				try {
+					entries.push(JSON.parse(line) as TraceEntry)
+				} catch {
+					// Skip malformed lines
+				}
+			}
+
+			return entries
+		} catch {
+			return []
 		}
 	}
 }

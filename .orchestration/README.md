@@ -23,7 +23,7 @@ Defines the active business requirements and features being worked on.
 active_intents:
     - id: "INT-001" # Unique identifier
       name: "Feature Name" # Human-readable name
-      status: "IN_PROGRESS" # PLANNED | IN_PROGRESS | COMPLETED | BLOCKED | ABANDONED
+      status: "IN_PROGRESS" # PENDING | IN_PROGRESS | COMPLETE | BLOCKED | ARCHIVED
       owned_scope: # File patterns this intent owns
           - "src/auth/**"
           - "src/middleware/jwt.ts"

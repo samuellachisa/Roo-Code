@@ -1,160 +1,138 @@
 /**
- * Hook System Types
+ * Type definitions for the Intent-Code Traceability Hook System.
  *
- * Defines the type system for the Intent-Code Traceability Hook Engine
+ * These types govern the contract between the HookEngine, IntentContextLoader,
+ * TraceLogger, and BaseTool integration layer.
  */
 
-import type { ToolName } from "@roo-code/types"
-import type { Task } from "../task/Task"
+export type IntentStatus = "PENDING" | "IN_PROGRESS" | "COMPLETE" | "BLOCKED" | "ARCHIVED"
 
-/**
- * Mutation classification for semantic tracking
- */
+export interface SpecReference {
+	type: "speckit" | "github_issue" | "github_pr" | "constitution" | "external"
+	ref: string
+}
+
 export type MutationClass =
-	| "AST_REFACTOR" // Syntax change, same intent
-	| "INTENT_EVOLUTION" // New feature or behavior change
-	| "BUG_FIX" // Defect correction
-	| "DOCUMENTATION" // Comment/doc changes only
-	| "CONFIGURATION" // Config file changes
+	| "AST_REFACTOR"
+	| "INTENT_EVOLUTION"
+	| "BUG_FIX"
+	| "DOCUMENTATION"
+	| "CONFIGURATION"
+	| "FILE_CREATION"
+	| "FILE_DELETION"
 
-/**
- * Intent status lifecycle
- */
-export type IntentStatus = "PLANNED" | "IN_PROGRESS" | "COMPLETED" | "BLOCKED" | "ABANDONED"
-
-/**
- * Active Intent specification
- */
-export interface ActiveIntent {
+export interface IntentSpec {
 	id: string
 	name: string
 	status: IntentStatus
-	owned_scope: string[] // Glob patterns for files this intent owns
-	constraints: string[] // Business rules and technical constraints
-	acceptance_criteria: string[] // Definition of done
+	version?: number
+	owned_scope: string[]
+	constraints: string[]
+	acceptance_criteria: string[]
+	related_specs?: SpecReference[]
+	parent_intent?: string | null
+	tags?: string[]
 	created_at: string
 	updated_at: string
-	parent_intent_id?: string // For hierarchical intents
-	related_intents?: string[] // Cross-references
 }
 
-/**
- * Active intents collection
- */
-export interface ActiveIntentsDocument {
-	active_intents: ActiveIntent[]
+export interface ActiveIntentsFile {
+	active_intents: IntentSpec[]
 }
 
-/**
- * Agent trace entry (follows Agent Trace specification)
- */
-export interface AgentTraceEntry {
-	id: string // UUID v4
-	timestamp: string // ISO 8601
-	intent_id: string // Reference to active intent
-	mutation_class: MutationClass
-	vcs: {
-		revision_id: string // Git SHA
-	}
-	files: AgentTraceFile[]
+export interface SpatialEntry {
+	filePath: string
+	intentId: string
+	lastHash: string
+	lastModified: string
 }
 
-export interface AgentTraceFile {
-	relative_path: string
-	conversations: AgentTraceConversation[]
+export interface IntentContext {
+	intent: IntentSpec
+	relatedFiles: SpatialEntry[]
+	recentTraceEntries: TraceEntry[]
+	constraints: string[]
+	acceptanceCriteria: string[]
+	specExcerpts?: string[]
 }
 
-export interface AgentTraceConversation {
-	url: string // Session/task ID
-	contributor: {
-		entity_type: "AI" | "HUMAN"
-		model_identifier?: string
-	}
-	ranges: AgentTraceRange[]
-	related: AgentTraceRelation[]
+export interface PreToolContext {
+	toolName: string
+	filePath: string | null
+	intentId: string | null
+	params: Record<string, unknown>
+	sessionId: string
 }
 
-export interface AgentTraceRange {
-	start_line: number
-	end_line: number
-	content_hash: string // SHA-256 for spatial independence
-}
-
-export interface AgentTraceRelation {
-	type: "specification" | "issue" | "pr" | "commit"
-	value: string
-}
-
-/**
- * Hook execution context
- */
-export interface HookContext {
-	toolName: ToolName
-	params: any
-	task: Task
-	intentId?: string // Currently active intent
-	sessionId: string // Task/conversation ID
-}
-
-/**
- * Pre-hook execution result
- */
-export interface PreHookResult {
-	allowed: boolean // Whether to proceed with execution
-	blocked: boolean // Whether execution was blocked
-	error?: string // Error message if blocked
-	injectedContext?: string // Context to inject into prompt
-	modifiedParams?: any // Modified parameters
-	requiresApproval?: boolean // Whether HITL approval is needed
-}
-
-/**
- * Post-hook execution result
- */
-export interface PostHookResult {
+export interface PostToolContext {
+	toolName: string
+	filePath: string | null
+	intentId: string
+	params: Record<string, unknown>
+	sessionId: string
+	preHash: string | null
 	success: boolean
-	traceEntry?: AgentTraceEntry
+	error?: string
+}
+
+export interface HookResult {
+	allowed: boolean
+	reason?: string
+	preHash?: string | null
+	metadata?: Record<string, unknown>
+}
+
+export interface TraceEntry {
+	id: string
+	timestamp: string
+	intent_id: string
+	session_id: string
+	tool_name: string
+	mutation_class: MutationClass
+	file: {
+		relative_path: string
+		pre_hash: string | null
+		post_hash: string | null
+	} | null
+	scope_validation: "PASS" | "FAIL" | "EXEMPT"
+	success: boolean
 	error?: string
 }
 
 /**
- * Hook engine configuration
+ * Tools that mutate the workspace and require an active intent.
  */
-export interface HookEngineConfig {
-	enabled: boolean
-	orchestrationDir: string // Path to .orchestration/
-	requireIntentSelection: boolean // Enforce intent selection before writes
-	enableScopeValidation: boolean // Validate file scope against intent
-	enableConcurrencyControl: boolean // Optimistic locking
-	enableTraceLogging: boolean // Write to agent_trace.jsonl
-}
+export const WRITE_TOOLS: ReadonlySet<string> = new Set([
+	"write_to_file",
+	"apply_diff",
+	"edit",
+	"search_and_replace",
+	"search_replace",
+	"edit_file",
+	"apply_patch",
+	"insert_code_block",
+])
 
 /**
- * File hash entry for concurrency control
+ * Tools exempt from intent validation (read-only or meta-tools).
  */
-export interface FileHashEntry {
-	path: string
-	hash: string
-	timestamp: number
-}
-
-/**
- * Scope validation result
- */
-export interface ScopeValidationResult {
-	valid: boolean
-	intent?: ActiveIntent
-	reason?: string
-	requiresApproval: boolean
-}
-
-/**
- * Intent context for injection
- */
-export interface IntentContext {
-	intent: ActiveIntent
-	relatedFiles: string[]
-	recentTraces: AgentTraceEntry[]
-	constraints: string[]
-	acceptanceCriteria: string[]
-}
+export const EXEMPT_TOOLS: ReadonlySet<string> = new Set([
+	"read_file",
+	"read_command_output",
+	"list_files",
+	"search_files",
+	"codebase_search",
+	"ask_followup_question",
+	"attempt_completion",
+	"switch_mode",
+	"new_task",
+	"update_todo_list",
+	"run_slash_command",
+	"select_active_intent",
+	"use_mcp_tool",
+	"access_mcp_resource",
+	"browser_action",
+	"skill",
+	"generate_image",
+	"custom_tool",
+])

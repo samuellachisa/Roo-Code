@@ -1,245 +1,128 @@
 /**
- * Hook System Utilities
- *
- * Utility functions for content hashing, file operations, and pattern matching
+ * Utility functions for the hook system: content hashing and scope matching.
  */
 
-import crypto from "crypto"
-import fs from "fs/promises"
-import path from "path"
+import * as crypto from "crypto"
+import * as fs from "fs/promises"
+import * as path from "path"
+
+import type { MutationClass } from "./types"
+
+const HASH_PREFIX = "sha256:"
 
 /**
- * Compute SHA-256 hash of content for spatial independence
+ * Compute a deterministic SHA-256 hash of content.
+ * Returns lowercase hex prefixed with "sha256:".
  */
-export function computeContentHash(content: string): string {
-	const hash = crypto.createHash("sha256")
-	hash.update(content)
-	return `sha256:${hash.digest("hex")}`
+export function computeContentHash(content: string | Buffer): string {
+	const hash = crypto.createHash("sha256").update(content).digest("hex")
+	return `${HASH_PREFIX}${hash}`
 }
 
 /**
- * Compute hash of file content
+ * Compute the SHA-256 hash of a file's contents.
+ * Returns null if the file does not exist.
  */
-export async function computeFileHash(filePath: string): Promise<string> {
+export async function computeFileHash(absolutePath: string): Promise<string | null> {
 	try {
-		const content = await fs.readFile(filePath, "utf-8")
+		const content = await fs.readFile(absolutePath)
 		return computeContentHash(content)
-	} catch (error) {
-		throw new Error(`Failed to compute hash for ${filePath}: ${error}`)
+	} catch (err: unknown) {
+		if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+			return null
+		}
+		console.error(`[HookSystem] Failed to hash file ${absolutePath}:`, err)
+		return null
 	}
 }
 
 /**
- * Convert glob pattern to regex
- * Supports: *, **, ?, [abc], {a,b,c}
+ * Convert a glob pattern to a RegExp. Supports:
+ *   ** — matches any number of path segments (including zero)
+ *   *  — matches anything except path separators
+ *
+ * This avoids a runtime dependency on minimatch/picomatch for the
+ * simple patterns used in owned_scope declarations.
  */
-function globToRegex(pattern: string): RegExp {
-	let regexStr = "^"
+function globToRegExp(pattern: string): RegExp {
+	const normalized = pattern.replace(/\\/g, "/")
+	let regexStr = ""
 	let i = 0
-
-	while (i < pattern.length) {
-		const char = pattern[i]
-
-		if (char === "*") {
-			// Check for **
-			if (pattern[i + 1] === "*") {
-				// ** matches any number of directories
+	while (i < normalized.length) {
+		const ch = normalized[i]
+		if (ch === "*" && normalized[i + 1] === "*") {
+			// ** — match anything (including path separators)
+			if (normalized[i + 2] === "/") {
+				regexStr += "(?:.+/)?"
+				i += 3
+			} else {
 				regexStr += ".*"
 				i += 2
-				// Skip trailing /
-				if (pattern[i] === "/") {
-					i++
-				}
-			} else {
-				// * matches anything except /
-				regexStr += "[^/]*"
-				i++
 			}
-		} else if (char === "?") {
-			// ? matches any single character except /
+		} else if (ch === "*") {
+			regexStr += "[^/]*"
+			i++
+		} else if (ch === "?") {
 			regexStr += "[^/]"
 			i++
-		} else if (char === "[") {
-			// Character class [abc]
-			const closeIdx = pattern.indexOf("]", i)
-			if (closeIdx !== -1) {
-				regexStr += pattern.substring(i, closeIdx + 1)
-				i = closeIdx + 1
-			} else {
-				regexStr += "\\["
-				i++
-			}
-		} else if (char === "{") {
-			// Brace expansion {a,b,c}
-			const closeIdx = pattern.indexOf("}", i)
-			if (closeIdx !== -1) {
-				const options = pattern.substring(i + 1, closeIdx).split(",")
-				regexStr += "(" + options.map((opt) => opt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")"
-				i = closeIdx + 1
-			} else {
-				regexStr += "\\{"
-				i++
-			}
-		} else if (/[.*+?^${}()|[\]\\]/.test(char)) {
-			// Escape regex special characters
-			regexStr += "\\" + char
+		} else if (".+^${}()|[]\\".includes(ch)) {
+			regexStr += "\\" + ch
 			i++
 		} else {
-			regexStr += char
+			regexStr += ch
 			i++
 		}
 	}
-
-	regexStr += "$"
-	return new RegExp(regexStr)
+	return new RegExp(`^${regexStr}$`)
 }
 
 /**
- * Check if a file path matches any of the glob patterns
+ * Check whether a relative file path matches any of the owned_scope glob patterns.
  */
-export function matchesScope(filePath: string, patterns: string[]): boolean {
-	// Normalize path to use forward slashes
-	const normalizedPath = normalizePath(filePath)
-
-	return patterns.some((pattern) => {
-		const regex = globToRegex(pattern)
-		return regex.test(normalizedPath)
-	})
+export function isInScope(relativePath: string, scopePatterns: string[]): boolean {
+	const normalized = relativePath.replace(/\\/g, "/")
+	return scopePatterns.some((pattern) => globToRegExp(pattern).test(normalized))
 }
 
 /**
- * Ensure .orchestration directory exists
+ * Resolve an absolute file path to a workspace-relative path.
  */
-export async function ensureOrchestrationDir(cwd: string): Promise<string> {
-	const orchestrationDir = path.join(cwd, ".orchestration")
-	try {
-		await fs.mkdir(orchestrationDir, { recursive: true })
-		return orchestrationDir
-	} catch (error) {
-		throw new Error(`Failed to create .orchestration directory: ${error}`)
+export function toRelativePath(absolutePath: string, workspacePath: string): string {
+	return path.relative(workspacePath, absolutePath).replace(/\\/g, "/")
+}
+
+/**
+ * Extract the target file path from tool parameters.
+ * Different tools use different parameter names for the file path.
+ */
+export function extractFilePathFromParams(params: Record<string, unknown>): string | null {
+	if (typeof params.path === "string") return params.path
+	if (typeof params.file_path === "string") return params.file_path
+	if (typeof params.target_file === "string") return params.target_file
+	return null
+}
+
+/**
+ * Classify a mutation based on tool name and pre-mutation hash.
+ */
+export function classifyMutation(toolName: string, _filePath: string | null, preHash: string | null): MutationClass {
+	if (preHash === null) {
+		return "FILE_CREATION"
 	}
-}
 
-/**
- * Check if orchestration is enabled for this workspace
- */
-export async function isOrchestrationEnabled(cwd: string): Promise<boolean> {
-	const orchestrationDir = path.join(cwd, ".orchestration")
-	try {
-		const stat = await fs.stat(orchestrationDir)
-		return stat.isDirectory()
-	} catch {
-		return false
+	switch (toolName) {
+		case "apply_diff":
+		case "search_and_replace":
+		case "search_replace":
+		case "edit":
+		case "edit_file":
+		case "apply_patch":
+			return "AST_REFACTOR"
+		case "write_to_file":
+			return "INTENT_EVOLUTION"
+		case "execute_command":
+			return "CONFIGURATION"
+		default:
+			return "INTENT_EVOLUTION"
 	}
-}
-
-/**
- * Generate UUID v4
- */
-export function generateUUID(): string {
-	return crypto.randomUUID()
-}
-
-/**
- * Get current ISO 8601 timestamp
- */
-export function getCurrentTimestamp(): string {
-	return new Date().toISOString()
-}
-
-/**
- * Extract line range from content
- */
-export function extractLineRange(content: string, startLine: number, endLine: number): string {
-	const lines = content.split("\n")
-	return lines.slice(startLine - 1, endLine).join("\n")
-}
-
-/**
- * Normalize path to use forward slashes (for cross-platform consistency)
- */
-export function normalizePath(filePath: string): string {
-	return filePath.replace(/\\/g, "/")
-}
-
-/**
- * Get relative path from cwd
- */
-export function getRelativePath(cwd: string, absolutePath: string): string {
-	const rel = path.relative(cwd, absolutePath)
-	return normalizePath(rel)
-}
-
-/**
- * Parse YAML safely (basic implementation)
- * For production, use a proper YAML library like 'yaml'
- */
-export function parseYAML(content: string): any {
-	// Use yaml package
-	const yaml = require("yaml")
-	return yaml.parse(content)
-}
-
-/**
- * Stringify to YAML
- */
-export function stringifyYAML(data: any): string {
-	const yaml = require("yaml")
-	return yaml.stringify(data)
-}
-
-/**
- * Append line to JSONL file
- */
-export async function appendToJSONL(filePath: string, data: any): Promise<void> {
-	const line = JSON.stringify(data) + "\n"
-	await fs.appendFile(filePath, line, "utf-8")
-}
-
-/**
- * Read JSONL file and parse entries
- */
-export async function readJSONL(filePath: string): Promise<any[]> {
-	try {
-		const content = await fs.readFile(filePath, "utf-8")
-		return content
-			.split("\n")
-			.filter((line) => line.trim())
-			.map((line) => JSON.parse(line))
-	} catch (error: any) {
-		if (error.code === "ENOENT") {
-			return []
-		}
-		throw error
-	}
-}
-
-/**
- * Get Git revision ID (SHA)
- */
-export async function getGitRevision(cwd: string): Promise<string> {
-	try {
-		const { simpleGit } = await import("simple-git")
-		const git = simpleGit(cwd)
-		const log = await git.log({ maxCount: 1 })
-		return log.latest?.hash || "unknown"
-	} catch {
-		return "unknown"
-	}
-}
-
-/**
- * Validate intent ID format
- */
-export function isValidIntentId(intentId: string): boolean {
-	// Format: INT-XXX or REQ-XXX or similar
-	return /^[A-Z]+-\d+$/.test(intentId)
-}
-
-/**
- * Sanitize file path for security
- */
-export function sanitizePath(filePath: string): string {
-	// Remove any path traversal attempts
-	return filePath.replace(/\.\./g, "").replace(/^\//, "")
 }

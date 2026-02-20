@@ -1,259 +1,278 @@
 /**
- * Intent Context Loader
+ * IntentContextLoader
  *
- * Loads and manages intent context from .orchestration/active_intents.yaml
+ * Reads active_intents.yaml, resolves intent specifications, and builds
+ * curated context for the agent. Implements Constitution Principle 6:
+ * "Context is curated, not dumped."
  */
 
-import fs from "fs/promises"
-import path from "path"
-import type { ActiveIntent, ActiveIntentsDocument, IntentContext, AgentTraceEntry } from "./types"
-import { parseYAML, readJSONL, isOrchestrationEnabled } from "./utils"
+import * as fs from "fs/promises"
+import * as path from "path"
+import YAML from "yaml"
+
+import type { IntentSpec, IntentContext, ActiveIntentsFile, SpatialEntry, TraceEntry } from "./types"
+import { IntentValidator } from "./IntentValidator"
+
+const INTENTS_FILENAME = "active_intents.yaml"
+const MAX_RECENT_TRACES = 20
+const MAX_CONTEXT_BYTES = 16384 // ~4000 tokens
+const MAX_SPEC_EXCERPT_BYTES = 2048
 
 export class IntentContextLoader {
-	private cwd: string
-	private orchestrationDir: string
-	private cachedIntents: Map<string, ActiveIntent> = new Map()
+	private workspacePath: string
+	private cachedIntents: IntentSpec[] | null = null
 	private cacheTimestamp: number = 0
-	private readonly CACHE_TTL = 5000 // 5 seconds
+	private readonly cacheTtlMs = 5000
 
-	constructor(cwd: string) {
-		this.cwd = cwd
-		this.orchestrationDir = path.join(cwd, ".orchestration")
+	constructor(workspacePath: string) {
+		this.workspacePath = workspacePath
+	}
+
+	private get intentsFilePath(): string {
+		return path.join(this.workspacePath, ".orchestration", INTENTS_FILENAME)
 	}
 
 	/**
-	 * Check if orchestration is enabled
+	 * Force-reload the intents file from disk.
 	 */
-	async isEnabled(): Promise<boolean> {
-		return isOrchestrationEnabled(this.cwd)
+	async reload(): Promise<void> {
+		this.cachedIntents = null
+		this.cacheTimestamp = 0
+		await this.loadIntents()
 	}
 
 	/**
-	 * Load all active intents from YAML
+	 * Load and cache the intents from active_intents.yaml.
 	 */
-	async loadActiveIntents(): Promise<ActiveIntent[]> {
+	private async loadIntents(): Promise<IntentSpec[]> {
 		const now = Date.now()
-
-		// Return cached if still valid
-		if (this.cachedIntents.size > 0 && now - this.cacheTimestamp < this.CACHE_TTL) {
-			return Array.from(this.cachedIntents.values())
+		if (this.cachedIntents !== null && now - this.cacheTimestamp < this.cacheTtlMs) {
+			return this.cachedIntents
 		}
-
-		const intentsPath = path.join(this.orchestrationDir, "active_intents.yaml")
 
 		try {
-			const content = await fs.readFile(intentsPath, "utf-8")
-			const doc: ActiveIntentsDocument = parseYAML(content)
-
-			// Update cache
-			this.cachedIntents.clear()
-			for (const intent of doc.active_intents || []) {
-				this.cachedIntents.set(intent.id, intent)
+			const raw = await fs.readFile(this.intentsFilePath, "utf-8")
+			const parsed = YAML.parse(raw) as ActiveIntentsFile
+			if (!parsed?.active_intents || !Array.isArray(parsed.active_intents)) {
+				console.warn("[HookSystem] active_intents.yaml has no valid active_intents array")
+				this.cachedIntents = []
+			} else {
+				const validator = new IntentValidator()
+				this.cachedIntents = parsed.active_intents.filter((spec) => {
+					const result = validator.validateIntentSpec(spec)
+					if (!result.valid) {
+						console.warn(`[HookSystem] Skipping invalid intent: ${result.errors.join(", ")}`)
+					}
+					if (result.warnings.length > 0) {
+						console.warn(`[HookSystem] Intent warnings: ${result.warnings.join(", ")}`)
+					}
+					return result.valid
+				})
 			}
-			this.cacheTimestamp = now
-
-			return doc.active_intents || []
-		} catch (error: any) {
-			if (error.code === "ENOENT") {
-				// File doesn't exist yet - return empty array
-				return []
-			}
-			throw new Error(`Failed to load active intents: ${error.message}`)
-		}
-	}
-
-	/**
-	 * Get a specific intent by ID
-	 */
-	async getIntent(intentId: string): Promise<ActiveIntent | undefined> {
-		const intents = await this.loadActiveIntents()
-		return intents.find((intent) => intent.id === intentId)
-	}
-
-	/**
-	 * Get intents that own a specific file path
-	 */
-	async getIntentsForFile(filePath: string): Promise<ActiveIntent[]> {
-		const intents = await this.loadActiveIntents()
-		const { matchesScope } = await import("./utils")
-
-		return intents.filter((intent) => matchesScope(filePath, intent.owned_scope))
-	}
-
-	/**
-	 * Get recent trace entries for an intent
-	 */
-	async getRecentTraces(intentId: string, limit: number = 10): Promise<AgentTraceEntry[]> {
-		const tracePath = path.join(this.orchestrationDir, "agent_trace.jsonl")
-
-		try {
-			const allTraces = await readJSONL(tracePath)
-
-			// Filter by intent_id and get most recent
-			const intentTraces = allTraces
-				.filter((trace: AgentTraceEntry) => trace.intent_id === intentId)
-				.sort(
-					(a: AgentTraceEntry, b: AgentTraceEntry) =>
-						new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-				)
-				.slice(0, limit)
-
-			return intentTraces
-		} catch (error: any) {
-			if (error.code === "ENOENT") {
-				return []
-			}
-			throw new Error(`Failed to load trace entries: ${error.message}`)
-		}
-	}
-
-	/**
-	 * Get files related to an intent from trace history
-	 */
-	async getRelatedFiles(intentId: string): Promise<string[]> {
-		const traces = await this.getRecentTraces(intentId, 50)
-		const files = new Set<string>()
-
-		for (const trace of traces) {
-			for (const file of trace.files) {
-				files.add(file.relative_path)
+		} catch (err: unknown) {
+			if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+				this.cachedIntents = []
+			} else {
+				console.error("[HookSystem] Failed to parse active_intents.yaml:", err)
+				this.cachedIntents = []
 			}
 		}
 
-		return Array.from(files)
+		this.cacheTimestamp = now
+		return this.cachedIntents
 	}
 
 	/**
-	 * Build complete intent context for injection
+	 * Retrieve a single intent by ID. Returns null if not found.
 	 */
-	async buildIntentContext(intentId: string): Promise<IntentContext | undefined> {
+	async getIntent(intentId: string): Promise<IntentSpec | null> {
+		const intents = await this.loadIntents()
+		return intents.find((i) => i.id === intentId) ?? null
+	}
+
+	/**
+	 * List all active intents.
+	 */
+	async getAllIntents(): Promise<IntentSpec[]> {
+		return this.loadIntents()
+	}
+
+	/**
+	 * Build the full curated context for a given intent.
+	 * Loads intent spec, related files from the spatial map, and recent trace entries.
+	 */
+	async buildIntentContext(intentId: string, traceEntries: TraceEntry[] = []): Promise<IntentContext | null> {
 		const intent = await this.getIntent(intentId)
 		if (!intent) {
-			return undefined
+			return null
 		}
 
-		const [relatedFiles, recentTraces] = await Promise.all([
-			this.getRelatedFiles(intentId),
-			this.getRecentTraces(intentId, 5),
-		])
+		const relatedFiles = await this.loadSpatialEntries(intentId)
+		const specExcerpts = await this.resolveRelatedSpecs(intent)
 
-		return {
+		const recentTraces = traceEntries.filter((e) => e.intent_id === intentId).slice(-MAX_RECENT_TRACES)
+
+		const context: IntentContext = {
 			intent,
 			relatedFiles,
-			recentTraces,
+			recentTraceEntries: recentTraces,
 			constraints: intent.constraints,
 			acceptanceCriteria: intent.acceptance_criteria,
+			specExcerpts: specExcerpts.length > 0 ? specExcerpts : undefined,
+		}
+
+		return this.truncateContext(context)
+	}
+
+	/**
+	 * Resolve related_specs entries of type "speckit" or "constitution" by reading the files.
+	 * Each excerpt is capped at MAX_SPEC_EXCERPT_BYTES.
+	 */
+	private async resolveRelatedSpecs(intent: IntentSpec): Promise<string[]> {
+		if (!intent.related_specs || intent.related_specs.length === 0) {
+			return []
+		}
+
+		const excerpts: string[] = []
+		for (const ref of intent.related_specs) {
+			if (ref.type !== "speckit" && ref.type !== "constitution") {
+				continue
+			}
+			try {
+				const specPath = path.join(this.workspacePath, ref.ref)
+				const content = await fs.readFile(specPath, "utf-8")
+				const truncated =
+					content.length > MAX_SPEC_EXCERPT_BYTES
+						? content.slice(0, MAX_SPEC_EXCERPT_BYTES) + "\n[...truncated]"
+						: content
+				excerpts.push(truncated)
+			} catch {
+				// Spec file not found — skip silently
+			}
+		}
+		return excerpts
+	}
+
+	/**
+	 * Load spatial entries for an intent from intent_map.md.
+	 * Parses the markdown to extract file references under the intent's section.
+	 */
+	private async loadSpatialEntries(intentId: string): Promise<SpatialEntry[]> {
+		const mapPath = path.join(this.workspacePath, ".orchestration", "intent_map.md")
+		try {
+			const content = await fs.readFile(mapPath, "utf-8")
+			return this.parseSpatialMap(content, intentId)
+		} catch {
+			return []
 		}
 	}
 
 	/**
-	 * Format intent context as XML for prompt injection
+	 * Parse intent_map.md and extract file references for a specific intent.
+	 */
+	private parseSpatialMap(content: string, intentId: string): SpatialEntry[] {
+		const entries: SpatialEntry[] = []
+		const lines = content.split("\n")
+		let inSection = false
+
+		for (const line of lines) {
+			if (line.startsWith("## ") && line.includes(intentId)) {
+				inSection = true
+				continue
+			}
+			if (inSection && line.startsWith("## ")) {
+				break
+			}
+			if (inSection && line.startsWith("- `")) {
+				const match = line.match(/^- `([^`]+)`/)
+				if (match) {
+					entries.push({
+						filePath: match[1],
+						intentId,
+						lastHash: "",
+						lastModified: "",
+					})
+				}
+			}
+		}
+
+		return entries
+	}
+
+	/**
+	 * Truncate context to stay within token budget.
+	 * Drops trace entries first, then related files.
+	 */
+	private truncateContext(context: IntentContext): IntentContext {
+		let serialized = JSON.stringify(context)
+		if (serialized.length <= MAX_CONTEXT_BYTES) {
+			return context
+		}
+
+		// Tier 1: Truncate trace entries first
+		while (context.recentTraceEntries.length > 0 && serialized.length > MAX_CONTEXT_BYTES) {
+			context.recentTraceEntries.shift()
+			serialized = JSON.stringify(context)
+		}
+
+		// Tier 2: Truncate spec excerpts
+		if (context.specExcerpts) {
+			while (context.specExcerpts.length > 0 && serialized.length > MAX_CONTEXT_BYTES) {
+				context.specExcerpts.shift()
+				serialized = JSON.stringify(context)
+			}
+			if (context.specExcerpts.length === 0) {
+				context.specExcerpts = undefined
+			}
+		}
+
+		// Tier 3: Truncate related files
+		while (context.relatedFiles.length > 0 && serialized.length > MAX_CONTEXT_BYTES) {
+			context.relatedFiles.shift()
+			serialized = JSON.stringify(context)
+		}
+
+		return context
+	}
+
+	/**
+	 * Format intent context as XML for injection into the agent's system prompt.
 	 */
 	formatContextForPrompt(context: IntentContext): string {
-		const { intent, relatedFiles, recentTraces, constraints, acceptanceCriteria } = context
+		const { intent, relatedFiles, constraints, acceptanceCriteria, specExcerpts } = context
 
-		let xml = `<intent_context>\n`
-		xml += `  <intent_id>${intent.id}</intent_id>\n`
-		xml += `  <intent_name>${intent.name}</intent_name>\n`
-		xml += `  <status>${intent.status}</status>\n`
-
-		xml += `  <owned_scope>\n`
-		for (const pattern of intent.owned_scope) {
-			xml += `    <pattern>${pattern}</pattern>\n`
-		}
-		xml += `  </owned_scope>\n`
-
-		if (constraints.length > 0) {
-			xml += `  <constraints>\n`
-			for (const constraint of constraints) {
-				xml += `    <constraint>${escapeXml(constraint)}</constraint>\n`
-			}
-			xml += `  </constraints>\n`
-		}
-
-		if (acceptanceCriteria.length > 0) {
-			xml += `  <acceptance_criteria>\n`
-			for (const criterion of acceptanceCriteria) {
-				xml += `    <criterion>${escapeXml(criterion)}</criterion>\n`
-			}
-			xml += `  </acceptance_criteria>\n`
-		}
+		const parts = [
+			`<intent_context id="${intent.id}" name="${intent.name}" status="${intent.status}"${intent.version ? ` version="${intent.version}"` : ""}>`,
+			`  <scope>`,
+			...intent.owned_scope.map((s) => `    <pattern>${s}</pattern>`),
+			`  </scope>`,
+			`  <constraints>`,
+			...constraints.map((c) => `    <constraint>${c}</constraint>`),
+			`  </constraints>`,
+			`  <acceptance_criteria>`,
+			...acceptanceCriteria.map((a) => `    <criterion>${a}</criterion>`),
+			`  </acceptance_criteria>`,
+		]
 
 		if (relatedFiles.length > 0) {
-			xml += `  <related_files>\n`
-			for (const file of relatedFiles.slice(0, 10)) {
-				xml += `    <file>${file}</file>\n`
+			parts.push(`  <related_files>`)
+			for (const f of relatedFiles) {
+				parts.push(`    <file path="${f.filePath}" />`)
 			}
-			xml += `  </related_files>\n`
+			parts.push(`  </related_files>`)
 		}
 
-		if (recentTraces.length > 0) {
-			xml += `  <recent_changes>\n`
-			for (const trace of recentTraces) {
-				xml += `    <change>\n`
-				xml += `      <timestamp>${trace.timestamp}</timestamp>\n`
-				xml += `      <mutation_class>${trace.mutation_class}</mutation_class>\n`
-				xml += `      <files>${trace.files.map((f) => f.relative_path).join(", ")}</files>\n`
-				xml += `    </change>\n`
+		if (specExcerpts && specExcerpts.length > 0) {
+			parts.push(`  <related_specs>`)
+			for (const excerpt of specExcerpts) {
+				parts.push(`    <spec_excerpt>`)
+				parts.push(`      ${excerpt.split("\n").slice(0, 5).join("\n      ")}`)
+				parts.push(`    </spec_excerpt>`)
 			}
-			xml += `  </recent_changes>\n`
+			parts.push(`  </related_specs>`)
 		}
 
-		xml += `</intent_context>`
-
-		return xml
+		parts.push(`</intent_context>`)
+		return parts.join("\n")
 	}
-
-	/**
-	 * Update intent status
-	 */
-	async updateIntentStatus(intentId: string, status: string): Promise<void> {
-		const intents = await this.loadActiveIntents()
-		const intent = intents.find((i) => i.id === intentId)
-
-		if (!intent) {
-			throw new Error(`Intent ${intentId} not found`)
-		}
-
-		intent.status = status as any
-		intent.updated_at = new Date().toISOString()
-
-		await this.saveActiveIntents(intents)
-	}
-
-	/**
-	 * Save active intents back to YAML
-	 */
-	private async saveActiveIntents(intents: ActiveIntent[]): Promise<void> {
-		const { stringifyYAML } = await import("./utils")
-		const doc: ActiveIntentsDocument = { active_intents: intents }
-		const yaml = stringifyYAML(doc)
-
-		const intentsPath = path.join(this.orchestrationDir, "active_intents.yaml")
-		await fs.writeFile(intentsPath, yaml, "utf-8")
-
-		// Invalidate cache
-		this.cachedIntents.clear()
-		this.cacheTimestamp = 0
-	}
-
-	/**
-	 * Clear cache (for testing)
-	 */
-	clearCache(): void {
-		this.cachedIntents.clear()
-		this.cacheTimestamp = 0
-	}
-}
-
-/**
- * Escape XML special characters
- */
-function escapeXml(text: string): string {
-	return text
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&apos;")
 }

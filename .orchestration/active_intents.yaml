@@ -10,11 +10,13 @@ active_intents:
   - id: "INT-001"
     name: "Intent-Code Traceability Hook System"
     status: "IN_PROGRESS"
+    version: 2
     owned_scope:
       - "src/core/hooks/**"
       - "src/core/tools/SelectActiveIntentTool.ts"
       - "src/core/prompts/tools/native-tools/select_active_intent.ts"
       - ".orchestration/**"
+      - ".specify/**"
     constraints:
       - "Must not break existing tool execution flow"
       - "Must be backward compatible with existing tasks"
@@ -26,12 +28,26 @@ active_intents:
       - "File modifications are logged to agent_trace.jsonl"
       - "Scope validation prevents out-of-scope modifications"
       - "Parallel agent sessions can work without conflicts"
+      - "Intent lifecycle transitions are validated and enforced"
+      - "Spatial map is auto-updated on successful mutations"
+    related_specs:
+      - type: "speckit"
+        ref: ".specify/specs/hook-system.spec.md"
+      - type: "speckit"
+        ref: ".specify/specs/intent-formalization.md"
+      - type: "constitution"
+        ref: ".specify/memory/constitution.md"
+    parent_intent: null
+    tags:
+      - "governance"
+      - "core-infrastructure"
     created_at: "2026-02-18T10:00:00Z"
-    updated_at: "2026-02-18T14:00:00Z"
+    updated_at: "2026-02-20T14:00:00Z"
 
   - id: "INT-002"
     name: "Example Feature - Weather API"
-    status: "PLANNED"
+    status: "PENDING"
+    version: 1
     owned_scope:
       - "src/api/weather/**"
       - "src/services/weather/**"
@@ -45,5 +61,10 @@ active_intents:
       - "Can fetch 5-day forecast"
       - "Unit tests achieve 90% coverage"
       - "API errors are properly handled and logged"
+    related_specs: []
+    parent_intent: null
+    tags:
+      - "feature"
+      - "api-integration"
     created_at: "2026-02-18T09:00:00Z"
     updated_at: "2026-02-18T09:00:00Z"
