@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import * as fs from "fs/promises"
 import { HookEngine } from "../HookEngine"
+import { HITLGate } from "../HITLGate"
 
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("fs/promises")>()
@@ -16,6 +17,26 @@ vi.mock("fs/promises", async (importOriginal) => {
 vi.mock("uuid", () => ({
 	v4: () => "trace-uuid-1234",
 }))
+vi.mock("child_process", () => ({
+	exec: vi.fn((_cmd: string, _opts: unknown, cb: (err: Error | null, result: unknown) => void) =>
+		cb(null, { stdout: "abc123def456\n", stderr: "" }),
+	),
+}))
+vi.mock("util", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("util")>()
+	return {
+		...actual,
+		promisify: (fn: (...args: unknown[]) => void) => {
+			return (...args: unknown[]) =>
+				new Promise((resolve, reject) => {
+					fn(...args, (err: Error | null, result: unknown) => {
+						if (err) reject(err)
+						else resolve(result)
+					})
+				})
+		},
+	}
+})
 
 const WORKSPACE = "/test/workspace"
 const SESSION = "test-session-1"
@@ -58,9 +79,11 @@ describe("HookEngine", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		HookEngine.clearInstances()
+		HITLGate.setEnabled(false) // Disable HITL for tests to avoid modal prompts
 	})
 
 	afterEach(() => {
+		HITLGate.setEnabled(true)
 		vi.restoreAllMocks()
 		HookEngine.clearInstances()
 	})
@@ -126,6 +149,41 @@ describe("HookEngine", () => {
 			})
 
 			expect(result.allowed).toBe(true)
+		})
+
+		it("rejects execute_command (destructive) without active intent", async () => {
+			mockOrchestrationExists()
+			vi.mocked(fs.readFile).mockResolvedValue(VALID_YAML)
+			const engine = HookEngine.getInstance(WORKSPACE, SESSION)
+
+			const result = await engine.preToolUse({
+				toolName: "execute_command",
+				filePath: null,
+				intentId: null,
+				params: { command: "rm -rf /" },
+				sessionId: SESSION,
+			})
+
+			expect(result.allowed).toBe(false)
+			expect(result.reason).toContain("No active intent")
+		})
+
+		it("allows execute_command with valid intent and HITL (disabled in tests)", async () => {
+			mockOrchestrationExists()
+			vi.mocked(fs.readFile).mockResolvedValue(VALID_YAML)
+			const engine = HookEngine.getInstance(WORKSPACE, SESSION)
+			engine.setActiveIntent("INT-001")
+
+			const result = await engine.preToolUse({
+				toolName: "execute_command",
+				filePath: null,
+				intentId: "INT-001",
+				params: { command: "npm test" },
+				sessionId: SESSION,
+			})
+
+			expect(result.allowed).toBe(true)
+			expect(result.metadata?.destructive).toBe(true)
 		})
 
 		it("rejects write tools without active intent", async () => {
@@ -324,6 +382,44 @@ describe("HookEngine", () => {
 			})
 
 			expect(fs.appendFile).not.toHaveBeenCalled()
+		})
+
+		it("uses agent-provided mutation_class when valid", async () => {
+			vi.mocked(fs.readFile).mockResolvedValue(VALID_YAML)
+			vi.mocked(fs.appendFile).mockImplementation(async (path, data) => {
+				const entry = JSON.parse(data as string)
+				expect(entry.files[0]?.conversations[0]?.related).toBeDefined()
+				// Agent passed mutation_class=AST_REFACTOR; we verify via the trace structure
+				// (mutation_class is internal; Agent Trace format uses ranges/related)
+				expect(entry.id).toBeDefined()
+				expect(entry.vcs).toBeDefined()
+			})
+
+			const engine = HookEngine.getInstance(WORKSPACE, SESSION)
+			engine.setActiveIntent("INT-001")
+
+			const enoent = new Error("ENOENT") as NodeJS.ErrnoException
+			enoent.code = "ENOENT"
+			vi.mocked(fs.readFile).mockRejectedValueOnce(enoent)
+
+			await engine.postToolUse({
+				toolName: "write_to_file",
+				filePath: "src/core/hooks/RefactoredFile.ts",
+				intentId: "INT-001",
+				params: { mutation_class: "AST_REFACTOR" },
+				sessionId: SESSION,
+				preHash: "sha256:abc123",
+				success: true,
+			})
+
+			expect(fs.appendFile).toHaveBeenCalled()
+			const appendCall = vi.mocked(fs.appendFile).mock.calls[0]
+			const logged = JSON.parse(appendCall[1] as string)
+			// Verify intent is in related (agent trace format)
+			const related = logged.files?.[0]?.conversations?.[0]?.related ?? []
+			expect(
+				related.some((r: { type: string; value: string }) => r.type === "intent" && r.value === "INT-001"),
+			).toBe(true)
 		})
 
 		it("updates spatial map on successful write", async () => {

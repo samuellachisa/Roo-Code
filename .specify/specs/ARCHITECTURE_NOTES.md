@@ -180,10 +180,10 @@ flowchart TD
 | 4. Scope validation | Match `filePath` against `intent.owned_scope[]` using glob patterns (`**`, `*`)                               | REJECT with scope violation message                 |
 | 5. Optimistic lock  | Compute SHA-256 of file content pre-mutation. Returns `null` for new files                                    | Fail-open (log error, allow)                        |
 
-**HITL Authorization Gate** (planned, not yet implemented):
+**HITL Authorization Gate** (implemented):
 
-- Destructive commands (`execute_command` with `rm`, `git push --force`, etc.) will trigger human confirmation
-- Scope escalation requests will require human approval before amending `owned_scope`
+- Destructive commands (`execute_command`, `delete_file`) require active intent + human confirmation via `vscode.window.showWarningMessage`
+- `HITLGate.requestApproval()` blocks until user clicks Allow or Reject; rejection returns structured error for LLM self-correction
 
 ### 3.2 PostToolUse Hook
 
@@ -210,14 +210,14 @@ flowchart TD
 
 **Responsibilities detail**:
 
-| Step                  | Responsibility                                          | Behavior                                                                                                                                                                |
-| --------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1. Post-hash          | SHA-256 of file after mutation                          | Returns `null` if file was deleted or doesn't exist                                                                                                                     |
-| 2. Classify mutation  | Determine `MutationClass` from tool name and hash state | `preHash == null` → `FILE_CREATION`; `apply_diff`/`edit` → `AST_REFACTOR`; `write_to_file` with existing hash → `INTENT_EVOLUTION`; `execute_command` → `CONFIGURATION` |
-| 3. Trace entry        | Serialize to Agent Trace Schema (see §4.2)              | UUID v4 for entry ID, ISO 8601 timestamp                                                                                                                                |
-| 4. Append to ledger   | `fs.appendFile` to `agent_trace.jsonl`                  | Single retry on write failure; fail-open on double failure                                                                                                              |
-| 5. Spatial map update | Add `filePath` to intent section in `intent_map.md`     | Deduplicates; creates section if missing; fail-open on error                                                                                                            |
-| 6. Lessons Learned    | Append to `CLAUDE.md` on verification failure           | Planned — triggers when `postHash` diverges from expected                                                                                                               |
+| Step                  | Responsibility                                                        | Behavior                                                                                                                                                                |
+| --------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Post-hash          | SHA-256 of file after mutation                                        | Returns `null` if file was deleted or doesn't exist                                                                                                                     |
+| 2. Classify mutation  | Determine `MutationClass` from tool name and hash state               | `preHash == null` → `FILE_CREATION`; `apply_diff`/`edit` → `AST_REFACTOR`; `write_to_file` with existing hash → `INTENT_EVOLUTION`; `execute_command` → `CONFIGURATION` |
+| 3. Trace entry        | Serialize to Agent Trace Schema (see §4.2)                            | UUID v4 for entry ID, ISO 8601 timestamp                                                                                                                                |
+| 4. Append to ledger   | `fs.appendFile` to `agent_trace.jsonl`                                | Single retry on write failure; fail-open on double failure                                                                                                              |
+| 5. Spatial map update | Add `filePath` to intent section in `intent_map.md`                   | Deduplicates; creates section if missing; fail-open on error                                                                                                            |
+| 6. Lessons Learned    | Append to `CLAUDE.md` on scope violation, hash mismatch, tool failure | `LessonRecorder.recordScopeViolation()`, `recordHashMismatch()`, `recordLesson()`                                                                                       |
 
 ### 3.3 Context Injection (IntentContextLoader)
 
@@ -426,9 +426,9 @@ _This file is automatically updated by the hook system as intents evolve._
 - **Known Issues**: Active bugs or technical debt
 - **Future Enhancements**: Roadmap items
 
-**Write triggers** (planned):
+**Write triggers** (implemented):
 
-- PostToolUse appends "Lessons Learned" when verification failure detected (hash mismatch)
+- `LessonRecorder` appends "Lessons Learned" on scope violations, hash mismatches, and tool execution failures
 - Human appends architectural decisions and rules
 
 ---
@@ -437,11 +437,12 @@ _This file is automatically updated by the hook system as intents evolve._
 
 ### 5.1 Command Classification
 
-| Classification           | Tools                                                                                                                                                                                                                           | Intent Required | Scope Enforced |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | -------------- |
-| **Exempt** (read/meta)   | `read_file`, `list_files`, `search_files`, `codebase_search`, `ask_followup_question`, `attempt_completion`, `switch_mode`, `new_task`, `update_todo_list`, `select_active_intent`, `browser_action`, `skill`, `generate_image` | No              | No             |
-| **Write** (mutating)     | `write_to_file`, `apply_diff`, `edit`, `search_and_replace`, `search_replace`, `edit_file`, `apply_patch`, `insert_code_block`                                                                                                  | Yes             | Yes            |
-| **Unclassified** (other) | `execute_command`, custom tools                                                                                                                                                                                                 | No (logged)     | No             |
+| Classification           | Tools                                                                                                                                                                                                                           | Intent Required | Scope Enforced | HITL |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | -------------- | ---- |
+| **Exempt** (read/meta)   | `read_file`, `list_files`, `search_files`, `codebase_search`, `ask_followup_question`, `attempt_completion`, `switch_mode`, `new_task`, `update_todo_list`, `select_active_intent`, `browser_action`, `skill`, `generate_image` | No              | No             | No   |
+| **Destructive**          | `execute_command`, `delete_file`                                                                                                                                                                                                | Yes             | No (N/A)       | Yes  |
+| **Write** (mutating)     | `write_to_file`, `apply_diff`, `edit`, `search_and_replace`, `search_replace`, `edit_file`, `apply_patch`, `insert_code_block`                                                                                                  | Yes             | Yes            | No   |
+| **Unclassified** (other) | custom tools                                                                                                                                                                                                                    | No (logged)     | No             | No   |
 
 ### 5.2 Scope Enforcement
 
@@ -465,13 +466,11 @@ Glob matching uses a custom implementation (no external dependencies):
 - `*` matches any characters within a single path segment
 - Backslashes normalized to forward slashes
 
-### 5.3 `.intentignore` Pattern (Planned)
+### 5.3 `.intentignore` Pattern (Implemented)
 
-Not yet implemented. When implemented:
-
-- Files matching `.intentignore` patterns will be excluded from intent enforcement
-- Similar to `.gitignore` syntax
-- Use case: generated files, build artifacts, lock files
+- Path: `.orchestration/.intentignore`
+- Files matching patterns are excluded from intent scope enforcement (allowed without validation)
+- Gitignore-style syntax: `*`, `**`, `path/to/**`, `!negation`
 
 ### 5.4 Optimistic Locking
 
@@ -624,11 +623,10 @@ flowchart LR
 
 ## 9. Planned but Not Yet Implemented
 
-| Feature                          | Spec Reference    | Description                                           |
-| -------------------------------- | ----------------- | ----------------------------------------------------- |
-| HITL Authorization Gate          | §3.1              | Block destructive commands pending human confirmation |
-| `.intentignore`                  | §5.3              | Exclude paths from intent enforcement                 |
-| CLAUDE.md Auto-Append            | §4.4              | Append "Lessons Learned" on verification failure      |
-| Acceptance Criteria Verification | Lifecycle         | Automated check before COMPLETE transition            |
-| Intent Decomposition             | SPEC-002 §5       | Hierarchical intent trees with parent_intent          |
-| SQLite Backend                   | CLAUDE.md roadmap | Replace JSONL/YAML for better query performance       |
+| Feature                          | Spec Reference    | Description                                     |
+| -------------------------------- | ----------------- | ----------------------------------------------- |
+| Acceptance Criteria Verification | Lifecycle         | Automated check before COMPLETE transition      |
+| Intent Decomposition             | SPEC-002 §5       | Hierarchical intent trees with parent_intent    |
+| SQLite Backend                   | CLAUDE.md roadmap | Replace JSONL/YAML for better query performance |
+
+**Implemented (previously planned):** HITL Authorization Gate (§3.1), `.intentignore` (§5.3), CLAUDE.md Auto-Append via LessonRecorder (§4.4)

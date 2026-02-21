@@ -39,17 +39,15 @@ active_intents:
 
 ### `agent_trace.jsonl`
 
-Append-only ledger of all AI agent actions. Each line is a JSON object following the Agent Trace specification.
+Append-only ledger of all AI agent actions. Each line is a JSON object following the full [Agent Trace specification](https://github.com/entire-io/agent-trace), ensuring spatial independence via content hashing.
 
-**Structure:**
+**Structure (Agent Trace Spec):**
 
 ```json
 {
 	"id": "uuid-v4",
 	"timestamp": "2026-02-18T12:00:00Z",
-	"intent_id": "INT-001",
-	"mutation_class": "AST_REFACTOR",
-	"vcs": { "revision_id": "git_sha" },
+	"vcs": { "revision_id": "git_sha_hash" },
 	"files": [
 		{
 			"relative_path": "src/auth/middleware.ts",
@@ -69,8 +67,12 @@ Append-only ledger of all AI agent actions. Each line is a JSON object following
 					],
 					"related": [
 						{
-							"type": "specification",
+							"type": "intent",
 							"value": "INT-001"
+						},
+						{
+							"type": "specification",
+							"value": ".specify/specs/hook-system.spec.md"
 						}
 					]
 				}
@@ -80,13 +82,19 @@ Append-only ledger of all AI agent actions. Each line is a JSON object following
 }
 ```
 
-**Mutation Classes:**
+**Key Fields:**
 
-- `AST_REFACTOR`: Syntax change, same intent (e.g., rename variable)
-- `INTENT_EVOLUTION`: New feature or behavior change
-- `BUG_FIX`: Defect correction
-- `DOCUMENTATION`: Comment/doc changes only
-- `CONFIGURATION`: Config file changes
+| Field                         | Purpose                                                                    |
+| ----------------------------- | -------------------------------------------------------------------------- |
+| `vcs.revision_id`             | Git SHA at time of mutation — links trace to VCS history                   |
+| `conversations[].url`         | Session ID — identifies the agent session that performed the mutation      |
+| `conversations[].contributor` | Entity type (AI/Human) and model identifier                                |
+| `ranges[].content_hash`       | SHA-256 hash of the modified code block — **spatial independence**         |
+| `related[]`                   | The "Golden Thread" — links mutation to governing intent and SpecKit specs |
+
+**Content Hashing (Spatial Independence):**
+
+The `content_hash` in each range is computed from the actual file content after mutation, not from line numbers. If lines move during refactoring, the hash remains valid. This is the foundation of the Agent Trace spec's spatial independence guarantee.
 
 ### `intent_map.md`
 
