@@ -183,6 +183,7 @@ export const EXEMPT_TOOLS: ReadonlySet<string> = new Set([
 	"update_todo_list",
 	"run_slash_command",
 	"select_active_intent",
+	"verify_acceptance_criteria",
 	"use_mcp_tool",
 	"access_mcp_resource",
 	"browser_action",
