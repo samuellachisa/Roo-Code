@@ -21,6 +21,7 @@ import switchMode from "./switch_mode"
 import updateTodoList from "./update_todo_list"
 import writeToFile from "./write_to_file"
 import selectActiveIntent from "./select_active_intent"
+import verifyAcceptanceCriteria from "./verify_acceptance_criteria"
 
 export { getMcpServerTools } from "./mcp_server"
 export { convertOpenAIToolToAnthropic, convertOpenAIToolsToAnthropic } from "./converters"
@@ -62,6 +63,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		createReadFileTool(readFileOptions),
 		runSlashCommand,
 		selectActiveIntent,
+		verifyAcceptanceCriteria,
 		skill,
 		searchReplace,
 		edit_file,

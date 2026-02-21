@@ -80,6 +80,11 @@ export const toolParamNames = [
 	// read_file legacy format parameter (backward compatibility)
 	"files",
 	"line_ranges",
+	// governance tools
+	"intent_id",
+	"reasoning",
+	"summary",
+	"mutation_class",
 ] as const
 
 export type ToolParamName = (typeof toolParamNames)[number]
@@ -114,7 +119,20 @@ export type NativeToolArgs = {
 	switch_mode: { mode_slug: string; reason: string }
 	update_todo_list: { todos: string }
 	use_mcp_tool: { server_name: string; tool_name: string; arguments?: Record<string, unknown> }
-	write_to_file: { path: string; content: string }
+	write_to_file: {
+		path: string
+		content: string
+		mutation_class?:
+			| "AST_REFACTOR"
+			| "INTENT_EVOLUTION"
+			| "BUG_FIX"
+			| "DOCUMENTATION"
+			| "CONFIGURATION"
+			| "FILE_CREATION"
+			| "FILE_DELETION"
+	}
+	select_active_intent: { intent_id: string; reasoning?: string }
+	verify_acceptance_criteria: { intent_id: string; summary?: string }
 	// Add more tools as they are migrated to native protocol
 }
 
@@ -290,6 +308,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	generate_image: "generate images",
 	custom_tool: "use custom tools",
 	select_active_intent: "select active intent",
+	verify_acceptance_criteria: "verify acceptance criteria",
 } as const
 
 // Define available tool groups.

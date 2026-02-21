@@ -468,6 +468,7 @@ export class NativeToolCallParser {
 					nativeArgs = {
 						path: partialArgs.path,
 						content: partialArgs.content,
+						mutation_class: partialArgs.mutation_class,
 					}
 				}
 				break
@@ -550,6 +551,24 @@ export class NativeToolCallParser {
 				if (partialArgs.todos !== undefined) {
 					nativeArgs = {
 						todos: partialArgs.todos,
+					}
+				}
+				break
+
+			case "select_active_intent":
+				if (partialArgs.intent_id !== undefined) {
+					nativeArgs = {
+						intent_id: partialArgs.intent_id,
+						reasoning: partialArgs.reasoning,
+					}
+				}
+				break
+
+			case "verify_acceptance_criteria":
+				if (partialArgs.intent_id !== undefined) {
+					nativeArgs = {
+						intent_id: partialArgs.intent_id,
+						summary: partialArgs.summary,
 					}
 				}
 				break

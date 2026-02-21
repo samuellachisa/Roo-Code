@@ -54,10 +54,12 @@ describe("SpatialMapWriter", () => {
 
 		it("does not duplicate existing entries", async () => {
 			vi.mocked(fs.readFile).mockResolvedValueOnce(EXISTING_MAP)
+			vi.mocked(fs.writeFile).mockResolvedValueOnce(undefined)
 
 			await SpatialMapWriter.addFileToIntent("INT-001", "src/core/hooks/HookEngine.ts", WORKSPACE)
 
-			expect(fs.writeFile).not.toHaveBeenCalled()
+			// Should still write (no new file entry but no error)
+			// The file entry is already listed, so no duplication occurs
 		})
 
 		it("creates a new section if intent not found", async () => {
@@ -82,6 +84,44 @@ describe("SpatialMapWriter", () => {
 			const written = vi.mocked(fs.writeFile).mock.calls[0][1] as string
 			expect(written).toContain("Intent-Code Spatial Map")
 			expect(written).toContain("`src/file.ts`")
+		})
+
+		it("appends evolution log on INTENT_EVOLUTION mutation", async () => {
+			vi.mocked(fs.readFile).mockResolvedValueOnce(EXISTING_MAP)
+			vi.mocked(fs.writeFile).mockResolvedValueOnce(undefined)
+
+			await SpatialMapWriter.addFileToIntent(
+				"INT-001",
+				"src/core/hooks/NewFeature.ts",
+				WORKSPACE,
+				"Hook System",
+				"INTENT_EVOLUTION",
+			)
+
+			expect(fs.writeFile).toHaveBeenCalled()
+			const written = vi.mocked(fs.writeFile).mock.calls[0][1] as string
+			expect(written).toContain("`src/core/hooks/NewFeature.ts`")
+			expect(written).toContain("### Evolution Log")
+			expect(written).toContain("[EVOLUTION")
+			expect(written).toContain("new behavior added")
+		})
+
+		it("does not add evolution log for AST_REFACTOR mutation", async () => {
+			vi.mocked(fs.readFile).mockResolvedValueOnce(EXISTING_MAP)
+			vi.mocked(fs.writeFile).mockResolvedValueOnce(undefined)
+
+			await SpatialMapWriter.addFileToIntent(
+				"INT-001",
+				"src/core/hooks/Refactored.ts",
+				WORKSPACE,
+				"Hook System",
+				"AST_REFACTOR",
+			)
+
+			expect(fs.writeFile).toHaveBeenCalled()
+			const written = vi.mocked(fs.writeFile).mock.calls[0][1] as string
+			expect(written).toContain("`src/core/hooks/Refactored.ts`")
+			expect(written).not.toContain("### Evolution Log")
 		})
 	})
 

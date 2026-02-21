@@ -34,6 +34,8 @@ Workflow:
 4. Proceed with modifications — only files within the intent's owned_scope are allowed
 5. All mutations are cryptographically traced to agent_trace.jsonl
 
+When work on an intent is complete and all acceptance criteria are satisfied, call verify_acceptance_criteria(intent_id="<id>") to transition the intent to COMPLETE. This prevents further modifications to that intent.
+
 If your write is rejected with a scope violation, you must either:
 - Choose a different intent whose scope covers the target file
 - Ask the user to amend the intent's owned_scope in active_intents.yaml

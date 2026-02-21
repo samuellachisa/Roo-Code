@@ -15,6 +15,8 @@ const PATH_PARAMETER_DESCRIPTION = `The path of the file to write to (relative t
 
 const CONTENT_PARAMETER_DESCRIPTION = `The content to write to the file. ALWAYS provide the COMPLETE intended content of the file, without any truncation or omissions. You MUST include ALL parts of the file, even if they haven't been modified. Do NOT include line numbers in the content.`
 
+const MUTATION_CLASS_DESCRIPTION = `Strongly recommended for traceability. Classify this mutation: AST_REFACTOR (syntax change, same intent), INTENT_EVOLUTION (new feature or behavior change), BUG_FIX, DOCUMENTATION, CONFIGURATION, FILE_CREATION (new file), FILE_DELETION. If omitted, the system infers from context.`
+
 export default {
 	type: "function",
 	function: {
@@ -31,6 +33,19 @@ export default {
 				content: {
 					type: "string",
 					description: CONTENT_PARAMETER_DESCRIPTION,
+				},
+				mutation_class: {
+					type: "string",
+					description: MUTATION_CLASS_DESCRIPTION,
+					enum: [
+						"AST_REFACTOR",
+						"INTENT_EVOLUTION",
+						"BUG_FIX",
+						"DOCUMENTATION",
+						"CONFIGURATION",
+						"FILE_CREATION",
+						"FILE_DELETION",
+					],
 				},
 			},
 			required: ["path", "content"],

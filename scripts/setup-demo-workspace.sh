@@ -32,7 +32,7 @@ cat > "$ORCH_DIR/active_intents.yaml" << 'YAML'
 # Intent Catalog — Workspace-level declaration of all governed development tasks.
 # Each intent constrains which files the AI agent may modify and why.
 
-intents:
+active_intents:
   - id: "INT-DEMO-001"
     name: "Weather API Integration"
     status: "PENDING"

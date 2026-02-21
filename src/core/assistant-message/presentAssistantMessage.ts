@@ -36,6 +36,7 @@ import { skillTool } from "../tools/SkillTool"
 import { generateImageTool } from "../tools/GenerateImageTool"
 import { applyDiffTool as applyDiffToolClass } from "../tools/ApplyDiffTool"
 import { selectActiveIntentTool } from "../tools/SelectActiveIntentTool"
+import { verifyAcceptanceCriteriaTool } from "../tools/VerifyAcceptanceCriteriaTool"
 import { isValidToolName, validateToolUse } from "../tools/validateToolUse"
 import { codebaseSearchTool } from "../tools/CodebaseSearchTool"
 
@@ -384,6 +385,10 @@ export async function presentAssistantMessage(cline: Task) {
 						return `[${block.name} for '${block.params.skill}'${block.params.args ? ` with args: ${block.params.args}` : ""}]`
 					case "generate_image":
 						return `[${block.name} for '${block.params.path}']`
+					case "select_active_intent":
+						return `[${block.name} for '${block.params.intent_id}']`
+					case "verify_acceptance_criteria":
+						return `[${block.name} for '${block.params.intent_id}']`
 					default:
 						return `[${block.name}]`
 				}
@@ -852,6 +857,13 @@ export async function presentAssistantMessage(cline: Task) {
 					break
 				case "select_active_intent":
 					await selectActiveIntentTool.handle(cline, block as ToolUse<"select_active_intent">, {
+						askApproval,
+						handleError,
+						pushToolResult,
+					})
+					break
+				case "verify_acceptance_criteria":
+					await verifyAcceptanceCriteriaTool.handle(cline, block as ToolUse<"verify_acceptance_criteria">, {
 						askApproval,
 						handleError,
 						pushToolResult,

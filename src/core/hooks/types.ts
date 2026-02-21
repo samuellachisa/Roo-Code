@@ -73,6 +73,10 @@ export interface PostToolContext {
 	preHash: string | null
 	success: boolean
 	error?: string
+	modelIdentifier?: string
+	startLine?: number
+	endLine?: number
+	relatedSpecs?: string[]
 }
 
 export interface HookResult {
@@ -82,6 +86,50 @@ export interface HookResult {
 	metadata?: Record<string, unknown>
 }
 
+/**
+ * Full Agent Trace specification entry.
+ * Implements spatial independence via content hashing and links
+ * abstract Intent to concrete Code Hash.
+ *
+ * @see https://github.com/entire-io/agent-trace
+ */
+export interface AgentTraceEntry {
+	id: string
+	timestamp: string
+	vcs: { revision_id: string | null }
+	files: AgentTraceFile[]
+}
+
+export interface AgentTraceFile {
+	relative_path: string
+	conversations: AgentTraceConversation[]
+}
+
+export interface AgentTraceConversation {
+	url: string
+	contributor: {
+		entity_type: "AI" | "Human"
+		model_identifier: string
+	}
+	ranges: AgentTraceRange[]
+	related: AgentTraceRelation[]
+}
+
+export interface AgentTraceRange {
+	start_line: number
+	end_line: number
+	content_hash: string
+}
+
+export interface AgentTraceRelation {
+	type: "specification" | "intent" | "parent_trace"
+	value: string
+}
+
+/**
+ * Internal trace entry used by the hook system pipeline.
+ * Converted to AgentTraceEntry before being written to the ledger.
+ */
 export interface TraceEntry {
 	id: string
 	timestamp: string
@@ -114,6 +162,12 @@ export const WRITE_TOOLS: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * Destructive tools that require active intent + Human-in-the-Loop approval.
+ * Arbitrary shell execution and file deletion can cause irreversible damage.
+ */
+export const DESTRUCTIVE_TOOLS: ReadonlySet<string> = new Set(["execute_command", "delete_file"])
+
+/**
  * Tools exempt from intent validation (read-only or meta-tools).
  */
 export const EXEMPT_TOOLS: ReadonlySet<string> = new Set([
@@ -129,6 +183,7 @@ export const EXEMPT_TOOLS: ReadonlySet<string> = new Set([
 	"update_todo_list",
 	"run_slash_command",
 	"select_active_intent",
+	"verify_acceptance_criteria",
 	"use_mcp_tool",
 	"access_mcp_resource",
 	"browser_action",
